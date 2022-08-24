@@ -1,139 +1,49 @@
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/select.h>
-
 #define BUFFER_SIZE 4096
 
 typedef struct s_client {
 	int id;
 	int fd;
-	struct s_client *next;
-}	t_client;
-
-char msg[42];
-char * str = NULL;
+	struct s_client * next;
+} t_client;
 
 int g_id = 0;
-t_client * g_clients = NULL;
-int sock_fd;
-fd_set cpy_read, cpy_write, curr_sock;
+int g_sockfd;
+t_client * g_clients;
+fd_set curr_sock, write_sock, read_sock;
 
-void fatal() {
-	write(2, "Fatal error\n", strlen("Fatal error\n"));
-	close(sock_fd);
-	exit(1);
-}
+int extract_message(char **buf, char **msg)
+{
+	char	*newbuf;
+	int	i;
 
-int get_id(int fd) {
-	t_client * tmp = g_clients;
-	while (tmp) {
-		if (tmp->fd == fd)
-			return tmp->id;
-		tmp = tmp->next;
-	}
-	return -1;
-}
-
-int get_max_fd() {
-	int max_sd = sock_fd;
-	t_client * tmp = g_clients;
-	while (tmp) {
-		if (tmp->fd > max_sd)
-			max_sd = tmp->fd;
-		tmp = tmp->next;
-	}
-	return max_sd;
-}
-
-void send_all(int fd, char *str_req) {
-	t_client * tmp = g_clients;
-	while (tmp) {
-		if (tmp->fd != fd && FD_ISSET(tmp->fd, &cpy_write)) {
-			if (send(tmp->fd, str_req, strlen(str_req), 0) < 0)
-				fatal();
-		}
-		tmp = tmp->next;
-	}
-}
-
-int add_client_to_list(int fd) {
-	t_client * new = calloc(1, sizeof(t_client));
-	if (new == NULL)
-		fatal();
-	new->id = g_id++;
-	new->fd = fd;
-	new->next = NULL;
-	t_client * tmpClt = g_clients;
-	if (g_clients == NULL) {
-		g_clients = new;
-	}
-	else {
-		while (tmpClt->next) {
-			tmpClt = tmpClt->next;
-		}
-		tmpClt->next = new;
-	}
-	return new->id;
-}
-
-void add_client() {
-	struct sockaddr_in client_addr; 
-	socklen_t len = sizeof(client_addr);
-	int new_connection = accept(sock_fd, (struct sockaddr *)&client_addr, &len);
-	if (new_connection < 0)
-		fatal();
-	sprintf(msg, "server: client %d just arrived\n", add_client_to_list(new_connection));
-	send_all(new_connection, msg);
-	FD_SET(new_connection, &curr_sock);
-}
-
-int rm_client(int fd) {
-	t_client * tmp = g_clients;
-	int id;
-	t_client * del;
-	if (g_clients != NULL && g_clients->fd == fd) {
-		del = g_clients;
-		g_clients = g_clients->next;
-		id = del->id;
-		free(del);
-		return (id);
-	}
-
-	while (tmp && tmp->next && tmp->next->fd != fd)
-		tmp = tmp->next;
-
-	del = tmp->next;
-	id = del->id;
-	tmp->next = tmp->next->next;
-	free(del);
-	return id;
-}
-
-void ex_msg(int fd) {
-	int i = 0;
-
-	while (str[i]) {
-		if (str[i] == '\n') {
-			char old_char = str[i + 1];
-			str[i + 1] = '\0';
-			char *tmp_buf = calloc(strlen(str) + 4096, sizeof(char));
-			if (tmp_buf == NULL)
-				fatal();
-			sprintf(tmp_buf, "client %d: %s", get_id(fd), str);
-			send_all(fd, tmp_buf);
-			free(tmp_buf);
-			str[i + 1] = old_char;
+	*msg = 0;
+	if (*buf == 0)
+		return (0);
+	i = 0;
+	while ((*buf)[i])
+	{
+		if ((*buf)[i] == '\n')
+		{
+			newbuf = calloc(1, sizeof(*newbuf) * (strlen(*buf + i + 1) + 1));
+			if (newbuf == 0)
+				return (-1);
+			strcpy(newbuf, *buf + i + 1);
+			*msg = *buf;
+			(*msg)[i + 1] = 0;
+			*buf = newbuf;
+			return (1);
 		}
 		i++;
 	}
-	free(str);
-	str = calloc(42 * BUFFER_SIZE, sizeof(char));
+	return (0);
 }
 
 char *str_join(char *buf, char *add)
@@ -151,89 +61,230 @@ char *str_join(char *buf, char *add)
 	newbuf[0] = 0;
 	if (buf != 0)
 		strcat(newbuf, buf);
-	free(buf);
+	// free(buf);
 	strcat(newbuf, add);
 	return (newbuf);
+}
+
+void rm_client(int fd)
+{
+	t_client * tmp = g_clients, * del;
+
+	if (g_clients != NULL && g_clients->fd == fd) {
+		del = g_clients;
+		g_clients = g_clients->next;
+	}
+	else {
+		while (tmp && tmp->next && tmp->next->fd != fd)
+			tmp = tmp->next;
+		del = tmp->next;
+		tmp->next = tmp->next->next;
+	}
+	free(del);
+}
+
+int get_max_fd() {
+	int max_sd = g_sockfd;
+	t_client * tmp = g_clients;
+
+	while (tmp) {
+		if (tmp->fd > max_sd)
+			max_sd = tmp->fd;
+		tmp = tmp->next;
+	}
+	return max_sd;
+}
+
+int get_fd_id(int fd) {
+	t_client * tmp = g_clients;
+
+	while (tmp) {
+		if (tmp->fd == fd)
+			return tmp->id;
+		tmp = tmp->next;
+	}
+
+	return -1;
+}
+
+void fatal() {
+	write(2, "Fatal error\n", 13);
+	exit(1);
+}
+
+void broadcastLeftMessage(int fd, int index) {
+	t_client * tmp = g_clients;
+	char str[50];
+
+	bzero(&str, 50);
+	sprintf(str, "server: client %d just left\n", index);
+	while (tmp) {
+		if (tmp->fd != fd && FD_ISSET(tmp->fd, &write_sock)) {
+			if (send(tmp->fd, str, strlen(str), 0) < 0)
+				fatal();
+		}
+		tmp = tmp->next;
+	}
+}
+
+void broadcastJoinMessage(int fd, int index) {
+	t_client * tmp = g_clients;
+	char str[50];
+
+	bzero(&str, 50);
+	sprintf(str, "server: client %d just arrived\n", index);
+	while (tmp) {
+		if (tmp->fd != fd && FD_ISSET(tmp->fd, &write_sock)) {
+			if (send(tmp->fd, str, strlen(str), 0) < 0)
+				fatal();
+		}
+		tmp = tmp->next;
+	}
+}
+
+void broadcastMessage(char *message, int fd, int index) {
+	t_client * tmp = g_clients;
+	char * newMsg = NULL;
+	int len = 0;
+
+	if (message)
+		len = strlen(message);
+
+	newMsg = calloc(len + 42, sizeof(char));
+	if (newMsg == NULL)
+		fatal();
+
+	sprintf(newMsg, "client %d: %s", index, message);
+	while (tmp) {
+		if (tmp->fd != fd && FD_ISSET(tmp->fd, &write_sock)) {
+			if (send(tmp->fd, newMsg, strlen(newMsg), 0) < 0)
+				fatal();
+		}
+		tmp = tmp->next;
+	}
+	free(newMsg);
+}
+
+void sendMessage(char * message, int fd) {
+
+	char * newMsg;
+	int check = extract_message(&message, &newMsg);
+	int id = get_fd_id(fd);
+
+	while (check) {
+		broadcastMessage(newMsg, fd, id);
+		free(newMsg);
+		check = extract_message(&message, &newMsg);
+	}
+
+	free(newMsg);
+	free(message);
+}
+
+void add_client() {
+	int newConnection;
+	socklen_t len;
+	struct sockaddr_in cli;
+	t_client * tmp = g_clients;
+	
+	len = sizeof(cli);
+	newConnection = accept(g_sockfd, (struct sockaddr *)&cli, &len);
+	if (newConnection < 0)
+		fatal();
+	
+	t_client * newClt = calloc(1, sizeof(t_client));
+	if (newClt == NULL)
+		fatal();
+
+	newClt->id = g_id++;
+	newClt->fd = newConnection;
+	newClt->next = NULL;
+
+	if (g_clients == NULL) {
+		g_clients = newClt;
+	}
+	else {
+		while (tmp->next)
+			tmp = tmp->next;
+		tmp->next = newClt;
+	}
+	broadcastLeftMessage(newClt->fd, newClt->id);
+	FD_SET(newConnection, &curr_sock);
 }
 
 int main(int argc, char **argv) {
 
 	if (argc != 2) {
 		write(2, "Wrong number of arguments\n", strlen("Wrong number of arguments\n"));
-		exit(1);
+		return 1;
 	}
 
 	struct sockaddr_in servaddr; 
 
 	// socket create and verification 
-	sock_fd = socket(AF_INET, SOCK_STREAM, 0); 
-	if (sock_fd == -1)
+	g_sockfd = socket(AF_INET, SOCK_STREAM, 0); 
+	if (g_sockfd == -1)
 		fatal();
-	
-	printf("Socket successfully created..\n");
 
 	bzero(&servaddr, sizeof(servaddr)); 
 
-	// assign IP, PORT 
 	int port = atoi(argv[1]);
+
+	// assign IP, PORT 
 	servaddr.sin_family = AF_INET; 
 	servaddr.sin_addr.s_addr = htonl(2130706433); //127.0.0.1
 	servaddr.sin_port = htons(port); 
   
 	// Binding newly created socket to given IP and verification 
-	if ((bind(sock_fd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0)
-		fatal();
-	printf("Socket successfully binded..\n");
+	if ((bind(g_sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0)
+		fatal(); 
 
-	if (listen(sock_fd, 10) != 0)
+	if (listen(g_sockfd, 10) != 0)
 		fatal();
 
-	printf("Listening at port %d...\n", port);
+	printf("listening at port %d...\n", port);
 
 	FD_ZERO(&curr_sock);
-	FD_SET(sock_fd, &curr_sock);
-	str = calloc(42 * BUFFER_SIZE, sizeof(char));
-
+	FD_SET(g_sockfd, &curr_sock);
 	while (1) {
-		cpy_read = cpy_write = curr_sock;
 
-		int select_ret = select(get_max_fd() + 1, &cpy_read, &cpy_write, NULL, NULL);
-		if (select_ret < 0)
+		read_sock = write_sock = curr_sock;
+		int max_sd = get_max_fd();
+
+		int select_ret = select(max_sd + 1, &read_sock, &write_sock, NULL, NULL);
+
+		if (select_ret <= 0)
 			continue ;
 
-		for (int fd = 0;fd <= get_max_fd(); fd++) {
-
-			if (FD_ISSET(fd, &cpy_read)) {
-				if (fd == sock_fd) {
-					bzero(&msg, sizeof(msg));
+		for (int fd = 0 ; fd <= get_max_fd();fd++) {
+			if (FD_ISSET(fd, &read_sock)) {
+				if (fd == g_sockfd) {
 					add_client();
 					break ;
 				}
-				else {
-					int received = BUFFER_SIZE - 1;
-					char buffer[BUFFER_SIZE];
-					bzero(&buffer, sizeof(buffer));
-					while (received == BUFFER_SIZE - 1 || buffer[strlen(buffer) - 1] != '\n') {
-						received = recv(fd, buffer, BUFFER_SIZE - 1, 0);
-						if (received <= 0)
-							break;
-						buffer[received] = '\0';
-						str = str_join(str, buffer);
-					}
-					if (received <= 0) {
-						bzero(&msg, strlen(msg));
-						sprintf(msg, "server: client %d just left\n", rm_client(fd));
-						send_all(fd, msg);
-						FD_CLR(fd, &curr_sock);
-						close(fd);
+				int received = BUFFER_SIZE;
+				char str[BUFFER_SIZE + 1];
+				char * message = NULL;
+				while (received == BUFFER_SIZE) {
+					bzero(&str, BUFFER_SIZE + 1);
+					received = recv(fd, str, BUFFER_SIZE, 0);
+					if (received <= 0)
 						break ;
-					}
-					else {
-						ex_msg(fd);
-					}
+					char * ptr = message;
+					message = str_join(message, str);
+					free(ptr);
+				}
+				if (received <= 0) {
+					int id = get_fd_id(fd);
+					broadcastLeftMessage(fd, id);
+					rm_client(fd);
+					FD_CLR(fd, &curr_sock);
+					close(fd);
+				}
+				else {
+					sendMessage(message, fd);
 				}
 			}
 		}
 	}
-	return 0;
 }
