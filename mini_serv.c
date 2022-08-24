@@ -16,7 +16,7 @@ typedef struct s_client {
 
 int g_id = 0;
 int g_sockfd;
-t_client * g_clients;
+t_client * g_clients = NULL;
 fd_set curr_sock, write_sock, read_sock;
 
 int extract_message(char **buf, char **msg)
@@ -165,20 +165,27 @@ void broadcastMessage(char *message, int fd, int index) {
 	free(newMsg);
 }
 
-void sendMessage(char * message, int fd) {
+int sendMessage(char * message, int fd) {
 
 	char * newMsg;
-	int check = extract_message(&message, &newMsg);
 	int id = get_fd_id(fd);
+	int check = extract_message(&message, &newMsg);
+	if (check == -1)
+		fatal();
+	if (check == 0)
+		return (0);
 
 	while (check) {
 		broadcastMessage(newMsg, fd, id);
 		free(newMsg);
 		check = extract_message(&message, &newMsg);
+		if (check == -1)
+			fatal();
 	}
 
 	free(newMsg);
 	free(message);
+	return (1);
 }
 
 void add_client() {
@@ -191,7 +198,7 @@ void add_client() {
 	newConnection = accept(g_sockfd, (struct sockaddr *)&cli, &len);
 	if (newConnection < 0)
 		fatal();
-	
+	0
 	t_client * newClt = calloc(1, sizeof(t_client));
 	if (newClt == NULL)
 		fatal();
@@ -208,7 +215,7 @@ void add_client() {
 			tmp = tmp->next;
 		tmp->next = newClt;
 	}
-	broadcastLeftMessage(newClt->fd, newClt->id);
+	broadcastJoinMessage(newClt->fd, newClt->id);
 	FD_SET(newConnection, &curr_sock);
 }
 
@@ -246,6 +253,7 @@ int main(int argc, char **argv) {
 
 	FD_ZERO(&curr_sock);
 	FD_SET(g_sockfd, &curr_sock);
+	char * message = NULL;
 	while (1) {
 
 		read_sock = write_sock = curr_sock;
@@ -264,7 +272,6 @@ int main(int argc, char **argv) {
 				}
 				int received = BUFFER_SIZE;
 				char str[BUFFER_SIZE + 1];
-				char * message = NULL;
 				while (received == BUFFER_SIZE) {
 					bzero(&str, BUFFER_SIZE + 1);
 					received = recv(fd, str, BUFFER_SIZE, 0);
@@ -272,7 +279,8 @@ int main(int argc, char **argv) {
 						break ;
 					char * ptr = message;
 					message = str_join(message, str);
-					free(ptr);
+					if (ptr != NULL)
+						free(ptr);
 				}
 				if (received <= 0) {
 					int id = get_fd_id(fd);
@@ -282,7 +290,8 @@ int main(int argc, char **argv) {
 					close(fd);
 				}
 				else {
-					sendMessage(message, fd);
+					if (sendMessage(message, fd) != 0)
+						message = NULL;
 				}
 			}
 		}
